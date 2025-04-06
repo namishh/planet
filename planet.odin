@@ -298,7 +298,7 @@ main :: proc() {
 	}
 
 	PLANET_RADIUS :: 3.0
-	MIN_GAP :: 0.3
+	MIN_GAP :: 0.25
 	points := generate_sphere_points(f32(PLANET_RADIUS), MIN_GAP)
 
 	NUM_PLATES :: 8
