@@ -1,5 +1,6 @@
 *
 !.gitignore
 !planet.odin
+!random.odin
 !*.json
 !*.md
