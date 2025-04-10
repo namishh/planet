@@ -469,6 +469,78 @@ count_pentagons :: proc(planet: ^Planet) -> int {
 	return count
 }
 
+select_random_plate_centers :: proc(planet: ^Planet, num_plates: int) -> []int {
+    plate_count := num_plates
+    if plate_count > len(planet.faces) {
+        plate_count = len(planet.faces)
+    }
+    
+    indices := make([]int, len(planet.faces))
+    for i := 0; i < len(planet.faces); i += 1 {
+        indices[i] = i
+    }
+   
+    for i := len(indices) - 1; i > 0; i -= 1 {
+        j := rand_int_max(i + 1)
+        indices[i], indices[j] = indices[j], indices[i]
+    }
+    
+    plate_centers := make([]int, plate_count)
+    for i := 0; i < plate_count; i += 1 {
+        plate_centers[i] = indices[i]
+    }
+    
+    delete(indices)
+    return plate_centers
+}
+
+assign_faces_to_plates :: proc(planet: ^Planet, plate_center_indices: []int) {
+    plate_colors := make([]rl.Color, len(plate_center_indices))
+    for i := 0; i < len(plate_center_indices); i += 1 {
+        plate_colors[i] = rl.Color{
+            u8(rand_int_max(200) + 55), 
+            u8(rand_int_max(200) + 55), 
+            u8(rand_int_max(200) + 55),
+            255,
+        }
+    }
+    
+    for face_idx := 0; face_idx < len(planet.faces); face_idx += 1 {
+        face := &planet.faces[face_idx]
+        face_center := face.center
+        
+        closest_plate := 0
+        min_distance := f32(999999.0)
+        
+        for plate_idx := 0; plate_idx < len(plate_center_indices); plate_idx += 1 {
+            center_face_idx := plate_center_indices[plate_idx]
+            center_pos := planet.faces[center_face_idx].center
+            
+            dist := distance(face_center, center_pos)
+            
+            if dist < min_distance {
+                min_distance = dist
+                closest_plate = plate_idx
+            }
+        }
+        
+        face.region_id = closest_plate
+        face.color = plate_colors[closest_plate]
+    }
+    
+    delete(plate_colors)
+}
+
+apply_tectonic_plates :: proc(planet: ^Planet, num_plates: int) {
+    plate_centers := select_random_plate_centers(planet, num_plates)
+    defer delete(plate_centers)
+    
+    assign_faces_to_plates(planet, plate_centers)
+    
+    fmt.println("Applied tectonic plates:", num_plates)
+}
+
+
 main :: proc() {
 	rl.SetConfigFlags({.WINDOW_RESIZABLE, .MSAA_4X_HINT})
 	rl.InitWindow(1600, 900, "plonot")
@@ -496,6 +568,7 @@ main :: proc() {
 	subdivided = subdivide(&subdivided)
 
 	goldberg := create_dual(&subdivided)
+  apply_tectonic_plates(&goldberg, 8)
 
 	for !rl.WindowShouldClose() {
 		rl.UpdateCamera(&camera, .ORBITAL)
