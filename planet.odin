@@ -173,7 +173,7 @@ generate_icosahedron :: proc(radius: f32) -> Planet {
 					v1    = min_v,
 					v2    = max_v,
 					face1 = face_idx,
-					face2 = -1, 
+					face2 = -1,
 				}
 
 				edge_map[edge_key] = len(planet.edges)
@@ -193,7 +193,7 @@ get_midpoint :: proc(p1, p2: rl.Vector3, radius: f32) -> rl.Vector3 {
 }
 
 generate_edges :: proc(planet: ^Planet) {
-	edge_map := make(map[[2]int]int) 
+	edge_map := make(map[[2]int]int)
 	defer delete(edge_map)
 
 	for face_idx := 0; face_idx < len(planet.faces); face_idx += 1 {
@@ -216,7 +216,7 @@ generate_edges :: proc(planet: ^Planet) {
 					v1    = min_v,
 					v2    = max_v,
 					face1 = face_idx,
-					face2 = -1, 
+					face2 = -1,
 				}
 
 				edge_map[edge_key] = len(planet.edges)
@@ -257,6 +257,7 @@ create_face :: proc(
 	a, b, c: int,
 	color: rl.Color,
 	region_id: int,
+	radius: f32,
 ) {
 	v1 := vertices[a].position
 	v2 := vertices[b].position
@@ -273,9 +274,9 @@ create_face :: proc(
 	normal := normalize(cross(edge1, edge2))
 
 	center_normalized := normalize(center)
-	center.x = center_normalized.x * len(vertices[0].position)
-	center.y = center_normalized.y * len(vertices[0].position)
-	center.z = center_normalized.z * len(vertices[0].position)
+	center.x = center_normalized.x * radius
+	center.y = center_normalized.y * radius
+	center.z = center_normalized.z * radius
 
 	new_face := Face {
 		center      = center,
@@ -313,10 +314,46 @@ subdivide :: proc(planet: ^Planet) -> Planet {
 		m23 := get_or_create_midpoint(&result.vertices, &edge_midpoints, v2, v3, planet.radius)
 		m31 := get_or_create_midpoint(&result.vertices, &edge_midpoints, v3, v1, planet.radius)
 
-		create_face(&result.vertices, &result.faces, v1, m12, m31, face.color, face.region_id)
-		create_face(&result.vertices, &result.faces, m12, v2, m23, face.color, face.region_id)
-		create_face(&result.vertices, &result.faces, m31, m23, v3, face.color, face.region_id)
-		create_face(&result.vertices, &result.faces, m12, m23, m31, face.color, face.region_id)
+		create_face(
+			&result.vertices,
+			&result.faces,
+			v1,
+			m12,
+			m31,
+			face.color,
+			face.region_id,
+			planet.radius,
+		)
+		create_face(
+			&result.vertices,
+			&result.faces,
+			m12,
+			v2,
+			m23,
+			face.color,
+			face.region_id,
+			planet.radius,
+		)
+		create_face(
+			&result.vertices,
+			&result.faces,
+			m31,
+			m23,
+			v3,
+			face.color,
+			face.region_id,
+			planet.radius,
+		)
+		create_face(
+			&result.vertices,
+			&result.faces,
+			m12,
+			m23,
+			m31,
+			face.color,
+			face.region_id,
+			planet.radius,
+		)
 	}
 
 	generate_edges(&result)
@@ -447,11 +484,12 @@ main :: proc() {
 		projection = .PERSPECTIVE,
 	}
 
-	PLANET_RADIUS :: 3.0
+	PLANET_RADIUS :: 5.0
 
 	icosahedron := generate_icosahedron(PLANET_RADIUS)
 
 	subdivided := subdivide(&icosahedron)
+	subdivided = subdivide(&subdivided)
 	subdivided = subdivide(&subdivided)
 	subdivided = subdivide(&subdivided)
 	subdivided = subdivide(&subdivided)
@@ -476,6 +514,18 @@ main :: proc() {
 
 		for face in goldberg.faces {
 			edge_color := rl.WHITE
+
+			for i := 2; i < len(face.vertices); i += 1 {
+				v1_idx := face.vertices[0]
+				v2_idx := face.vertices[i - 1]
+				v3_idx := face.vertices[i]
+
+				v1 := goldberg.vertices[v1_idx].position
+				v2 := goldberg.vertices[v2_idx].position
+				v3 := goldberg.vertices[v3_idx].position
+
+				rl.DrawTriangle3D(v1, v2, v3, face.color)
+			}
 
 			for i := 0; i < len(face.vertices); i += 1 {
 				v1_idx := face.vertices[i]
