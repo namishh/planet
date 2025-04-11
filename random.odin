@@ -1,6 +1,8 @@
 package planet
 
 import "core:time"
+import rl "vendor:raylib"
+import "core:math"
 
 rand_state: u64
 
@@ -36,4 +38,17 @@ rand_int_max :: proc(max: int) -> int {
 		return 0
 	}
 	return int(rand_u32() % u32(max))
+}
+
+rand_unit_vector :: proc() -> rl.Vector3 {
+    for {
+        x := rand_float32_range(-1, 1)
+        y := rand_float32_range(-1, 1)
+        z := rand_float32_range(-1, 1)
+        length_sq := x*x + y*y + z*z
+        if length_sq > 0 && length_sq <= 1 {
+            length := math.sqrt(length_sq)
+            return rl.Vector3{x / length, y / length, z / length}
+        }
+    }
 }
