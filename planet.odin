@@ -66,6 +66,12 @@ TectonicPlate :: struct {
 	angular_velocity: f32,
 }
 
+HeightMap :: struct {
+    values: []f32,
+    min_height: f32,
+    max_height: f32,
+}
+
 generate_icosahedron :: proc(radius: f32) -> Planet {
 	planet := Planet {
 		radius = radius,
@@ -592,204 +598,299 @@ compute_face_stress :: proc(planet: ^Planet) -> []f32 {
 	return stress
 }
 
-stress_to_color :: proc(stress: f32, min_stress, max_stress: f32) -> rl.Color {
-	if max_stress <= min_stress {
-		return rl.Color{135, 206, 250, 255}
-	}
+generate_height_map :: proc(planet: ^Planet, plates: []TectonicPlate, stress_values: []f32) -> HeightMap {
+    heights := make([]f32, len(planet.faces))
+    
+    min_stress := f32(0)
+    max_stress := f32(0)
+    for stress in stress_values {
+        if stress > max_stress {
+            max_stress = stress
+        }
+    }
+    
+    for face_idx := 0; face_idx < len(planet.faces); face_idx += 1 {
+        face := &planet.faces[face_idx]
+        plate_idx := face.region_id
+        plate_type := plates[plate_idx].plate_type
+        
+        base_height := plate_type == .CONTINENTAL ? 0.5 : -0.5
+        
+        stress_factor := max_stress > 0 ? stress_values[face_idx] / max_stress : 0
+        stress_height := math.pow(stress_factor, 1.5) * 1.5
+        
+        heights[face_idx] = f32(base_height) + stress_height
+    }
+    
+    smoothed_heights := make([]f32, len(heights))
+    for face_idx := 0; face_idx < len(planet.faces); face_idx += 1 {
+        neighbors := get_neighbor_faces(planet, face_idx)
+        defer delete(neighbors)
+        
+        sum := heights[face_idx]
+        count := 1
+        
+        for neighbor_idx in neighbors {
+            sum += heights[neighbor_idx]
+            count += 1
+        }
+        
+        smoothed_heights[face_idx] = sum / f32(count)
+    }
+    
+    min_height := f32(999)
+    max_height := f32(-999)
+    
+    for height in smoothed_heights {
+        if height < min_height {
+            min_height = height
+        }
+        if height > max_height {
+            max_height = height
+        }
+    }
+    
+    delete(heights)
+    return HeightMap{values = smoothed_heights, min_height = min_height, max_height = max_height}
+}
 
-	t := (stress - min_stress) / (max_stress - min_stress)
-	t = math.clamp(t, 0, 1)
 
-	r := u8(135 + t * (255 - 135))
-	g := u8(206 * (1 - t))
-	b := u8(250 * (1 - t))
+height_to_color :: proc(height: f32, min_height, max_height: f32, mtnratio: f32, is_oceanic: bool) -> rl.Color {
+    if is_oceanic {
+        r := u8(22)
+        g := u8(44)
+        b := u8(99)
+        
+        return rl.Color{r, g, b, 255}
+    } else {
+        t := (height - min_height) / (max_height - min_height)
+        t = math.clamp(t, 0, 1)
+        
+        if t < 0.6 {
+            return rl.Color{34, 139, 34, 255} // Forest Green
+        } else if t < mtnratio {
+            return rl.Color{205, 133, 63, 255} // Peru
+        } else {
+            return rl.Color{165, 42, 42, 255} // Brown
+        }
+    }
+}
 
-	return rl.Color{r, g, b, 255}
+draw_rotation_axis :: proc(axis: rl.Vector3, planet_radius: f32) {
+    extended_length := planet_radius * 10
+    
+    start_point := rl.Vector3{
+        axis.x * -extended_length,
+        axis.y * -extended_length,
+        axis.z * -extended_length,
+    }
+    
+    end_point := rl.Vector3{
+        axis.x * extended_length,
+        axis.y * extended_length,
+        axis.z * extended_length,
+    }
+    
+    rl.DrawLine3D(start_point, end_point, rl.RED)
+}
+
+rotation_axis_from_angle :: proc(degrees: f64) -> rl.Vector3 {
+    tilt_angle := degrees * rl.DEG2RAD
+    
+    x := math.sin(tilt_angle)
+    y := math.cos(tilt_angle)
+    z := 0.0
+    
+    return normalize(rl.Vector3{f32(x), f32(y), f32(z)})
 }
 
 main :: proc() {
-	rl.SetConfigFlags({.WINDOW_RESIZABLE, .MSAA_4X_HINT})
-	rl.InitWindow(1600, 900, "plonot")
-	rl.SetTargetFPS(60)
+    rl.SetConfigFlags({.WINDOW_RESIZABLE, .MSAA_4X_HINT})
+    rl.InitWindow(1600, 900, "plonot")
+    rl.SetTargetFPS(60)
 
-	init_random()
+    init_random()
 
-	camera := rl.Camera3D {
-		position   = rl.Vector3{10.0, 10.0, 10.0},
-		target     = rl.Vector3{0.0, 0.0, 0.0},
-		up         = rl.Vector3{0.0, 1.0, 0.0},
-		fovy       = 45.0,
-		projection = .PERSPECTIVE,
-	}
+    camera := rl.Camera3D {
+        position   = rl.Vector3{10.0, 10.0, 10.0},
+        target     = rl.Vector3{0.0, 0.0, 0.0},
+        up         = rl.Vector3{0.0, 1.0, 0.0},
+        fovy       = 45.0,
+        projection = .PERSPECTIVE,
+    }
 
-	PLANET_RADIUS :: 5.0
-	CONTINENTS :: 32
+    PLANET_RADIUS :: 5.0
+    CONTINENTS :: 64
+		TILT :: 23.5
+		CONTINENTAL_TO_OCEANIC_RATIO :: 0.4
+		MOUNTAIN_THRESHOLD :: 0.69
 
-	icosahedron := generate_icosahedron(PLANET_RADIUS)
+    icosahedron := generate_icosahedron(PLANET_RADIUS)
 
-	subdivided := subdivide(&icosahedron)
-	subdivided = subdivide(&subdivided)
-	subdivided = subdivide(&subdivided)
-	subdivided = subdivide(&subdivided)
-	subdivided = subdivide(&subdivided)
-	subdivided = subdivide(&subdivided)
+    subdivided := subdivide(&icosahedron)
+    subdivided = subdivide(&subdivided)
+    subdivided = subdivide(&subdivided)
+    // subdivided = subdivide(&subdivided)
+    subdivided = subdivide(&subdivided)
+    subdivided = subdivide(&subdivided)
 
-	goldberg := create_dual(&subdivided)
-	apply_tectonic_plates(&goldberg, CONTINENTS)
+    goldberg := create_dual(&subdivided)
+    apply_tectonic_plates(&goldberg, CONTINENTS)
 
-	plates := make([]TectonicPlate, CONTINENTS)
+    plates := make([]TectonicPlate, CONTINENTS)
 
-	for i in 0 ..< CONTINENTS {
-		plates[i].faces = make([dynamic]int)
-		plates[i].edges = make([dynamic]int)
-		plates[i].vertices = make([dynamic]int)
-	}
+    for i in 0 ..< CONTINENTS {
+        plates[i].faces = make([dynamic]int)
+        plates[i].edges = make([dynamic]int)
+        plates[i].vertices = make([dynamic]int)
+    }
 
-	for face_idx in 0 ..< len(goldberg.faces) {
-		face := goldberg.faces[face_idx]
-		append(&plates[face.region_id].faces, face_idx)
-	}
+    for face_idx in 0 ..< len(goldberg.faces) {
+        face := goldberg.faces[face_idx]
+        append(&plates[face.region_id].faces, face_idx)
+    }
 
-	for plate_idx in 0 ..< CONTINENTS {
-		plate := &plates[plate_idx]
+    for plate_idx in 0 ..< CONTINENTS {
+        plate := &plates[plate_idx]
 
-		face_in_plate := make([]bool, len(goldberg.faces))
-		for face_idx in plate.faces {
-			face_in_plate[face_idx] = true
-		}
+        face_in_plate := make([]bool, len(goldberg.faces))
+        for face_idx in plate.faces {
+            face_in_plate[face_idx] = true
+        }
 
-		for edge_idx in 0 ..< len(goldberg.edges) {
-			edge := goldberg.edges[edge_idx]
-			if face_in_plate[edge.face1] && face_in_plate[edge.face2] {
-				append(&plate.edges, edge_idx)
-			}
-		}
+        for edge_idx in 0 ..< len(goldberg.edges) {
+            edge := goldberg.edges[edge_idx]
+            if (edge.face1 != -1 && edge.face2 != -1) && face_in_plate[edge.face1] && face_in_plate[edge.face2] {
+                append(&plate.edges, edge_idx)
+            }
+        }
 
-		vertex_set := make(map[int]bool)
-		for face_idx in plate.faces {
-			face := goldberg.faces[face_idx]
-			for v_idx in face.vertices {
-				vertex_set[v_idx] = true
-			}
-		}
-		for v_idx in vertex_set {
-			append(&plate.vertices, v_idx)
-		}
+        vertex_set := make(map[int]bool)
+        for face_idx in plate.faces {
+            face := goldberg.faces[face_idx]
+            for v_idx in face.vertices {
+                vertex_set[v_idx] = true
+            }
+        }
+        for v_idx in vertex_set {
+            append(&plate.vertices, v_idx)
+        }
 
-		delete(face_in_plate)
-		delete(vertex_set)
-	}
+        delete(face_in_plate)
+        delete(vertex_set)
+    }
 
+    rotation_axis := rotation_axis_from_angle(TILT) 
+    max_angular_velocity := 0.01
+    
+    for i in 0 ..< CONTINENTS {
+        if rand_float32() < CONTINENTAL_TO_OCEANIC_RATIO {
+            plates[i].plate_type = .CONTINENTAL
+        } else {
+            plates[i].plate_type = .OCEANIC
+        }
 
-	rotation_axis := rand_unit_vector()
+        plates[i].rotation_axis = rotation_axis
+        plates[i].angular_velocity = rand_float32_range(0, f32(max_angular_velocity))
+    }
 
-	max_angular_velocity := 0.01
-	for i in 0 ..< CONTINENTS {
-		if rand_float32() < 0.6 {
-			plates[i].plate_type = .OCEANIC
-		} else {
-			plates[i].plate_type = .CONTINENTAL
-		}
+    for plate in plates {
+        axis := plate.rotation_axis
+        omega := plate.angular_velocity
+        for face_idx in plate.faces {
+            face := &goldberg.faces[face_idx]
+            p := face.center
+            face.velocity = omega * cross(axis, p)
+        }
+    }
 
-		plates[i].rotation_axis = rotation_axis
-		plates[i].angular_velocity = rand_float32_range(0, f32(max_angular_velocity))
-	}
+    stress_values := compute_face_stress(&goldberg)
 
-	for plate in plates {
-		axis := plate.rotation_axis
-		omega := plate.angular_velocity
-		for face_idx in plate.faces {
-			face := &goldberg.faces[face_idx]
-			p := face.center
-			face.velocity = omega * cross(axis, p)
-		}
-	}
+    height_map := generate_height_map(&goldberg, plates, stress_values)
+    defer delete(height_map.values)
+    
+    for face_idx in 0 ..< len(goldberg.faces) {
+        face := &goldberg.faces[face_idx]
+        plate_type := plates[face.region_id].plate_type
+        is_oceanic := plate_type == .OCEANIC
+        
+        face.color = height_to_color(
+            height_map.values[face_idx],
+            height_map.min_height,
+            height_map.max_height,
+						MOUNTAIN_THRESHOLD,
+            is_oceanic
+        )
+    }
 
-	stress_values := compute_face_stress(&goldberg)
-	defer delete(stress_values)
+    for !rl.WindowShouldClose() {
+        rl.UpdateCamera(&camera, .ORBITAL)
 
-	min_stress := f32(0)
-	max_stress := f32(0)
-	for stress in stress_values {
-		if stress < min_stress {
-			min_stress = stress
-		}
-		if stress > max_stress {
-			max_stress = stress
-		}
-	}
+        rotation_speed := 0.0002
+        x := f64(camera.position.x)
+        z := f64(camera.position.z)
 
-	for face_idx in 0 ..< len(goldberg.faces) {
-		goldberg.faces[face_idx].color = stress_to_color(
-			stress_values[face_idx],
-			min_stress,
-			max_stress,
-		)
-	}
+        camera.position.x = f32(x * math.cos(rotation_speed) - z * math.sin(rotation_speed))
+        camera.position.z = f32(x * math.sin(rotation_speed) + z * math.cos(rotation_speed))
 
-	for !rl.WindowShouldClose() {
-		rl.UpdateCamera(&camera, .ORBITAL)
+        rl.BeginDrawing()
+        rl.ClearBackground(rl.BLACK)
 
-		rotation_speed := 0.0002
-		x := f64(camera.position.x)
-		z := f64(camera.position.z)
+        rl.BeginMode3D(camera)
 
-		camera.position.x = f32(x * math.cos(rotation_speed) - z * math.sin(rotation_speed))
-		camera.position.z = f32(x * math.sin(rotation_speed) + z * math.cos(rotation_speed))
+        for face in goldberg.faces {
+            edge_color := rl.Color{30, 30, 30, 255} // Dark edges
 
-		rl.BeginDrawing()
-		rl.ClearBackground(rl.BLACK)
+            for i := 2; i < len(face.vertices); i += 1 {
+                v1_idx := face.vertices[0]
+                v2_idx := face.vertices[i - 1]
+                v3_idx := face.vertices[i]
 
-		rl.BeginMode3D(camera)
+                v1 := goldberg.vertices[v1_idx].position
+                v2 := goldberg.vertices[v2_idx].position
+                v3 := goldberg.vertices[v3_idx].position
 
-		for face in goldberg.faces {
-			edge_color := rl.WHITE
+                rl.DrawTriangle3D(v1, v2, v3, face.color)
+            }
 
-			for i := 2; i < len(face.vertices); i += 1 {
-				v1_idx := face.vertices[0]
-				v2_idx := face.vertices[i - 1]
-				v3_idx := face.vertices[i]
+            for i := 0; i < len(face.vertices); i += 1 {
+                v1_idx := face.vertices[i]
+                v2_idx := face.vertices[(i + 1) % len(face.vertices)]
 
-				v1 := goldberg.vertices[v1_idx].position
-				v2 := goldberg.vertices[v2_idx].position
-				v3 := goldberg.vertices[v3_idx].position
+                v1 := goldberg.vertices[v1_idx].position
+                v2 := goldberg.vertices[v2_idx].position
 
-				rl.DrawTriangle3D(v1, v2, v3, face.color)
-			}
+                rl.DrawLine3D(v1, v2, edge_color)
+            }
+        }
 
-			for i := 0; i < len(face.vertices); i += 1 {
-				v1_idx := face.vertices[i]
-				v2_idx := face.vertices[(i + 1) % len(face.vertices)]
+        draw_rotation_axis(rotation_axis, PLANET_RADIUS)
 
-				v1 := goldberg.vertices[v1_idx].position
-				v2 := goldberg.vertices[v2_idx].position
+        rl.EndMode3D()
 
-				rl.DrawLine3D(v1, v2, edge_color)
-			}
-		}
+        rl.DrawFPS(10, 10)
+        rl.DrawText(fmt.ctprintf("Vertices: %d", len(goldberg.vertices)), 10, 40, 20, rl.WHITE)
+        rl.DrawText(fmt.ctprintf("Edges: %d", len(goldberg.edges)), 10, 70, 20, rl.WHITE)
+        rl.DrawText(fmt.ctprintf("Faces: %d", len(goldberg.faces)), 10, 100, 20, rl.WHITE)
+        rl.DrawText(fmt.ctprintf("Hexagons: %d", len(goldberg.faces) - 12), 10, 160, 20, rl.WHITE)
+        rl.DrawText(fmt.ctprintf("Height Range: %.2f to %.2f", height_map.min_height, height_map.max_height), 10, 190, 20, rl.WHITE)
 
-		rl.EndMode3D()
+        rl.EndDrawing()
+    }
 
-		rl.DrawFPS(10, 10)
-		rl.DrawText(fmt.ctprintf("Vertices: %d", len(goldberg.vertices)), 10, 40, 20, rl.WHITE)
-		rl.DrawText(fmt.ctprintf("Edges: %d", len(goldberg.edges)), 10, 70, 20, rl.WHITE)
-		rl.DrawText(fmt.ctprintf("Faces: %d", len(goldberg.faces)), 10, 100, 20, rl.WHITE)
-		rl.DrawText(
-			fmt.ctprintf("Hexagons: %d", len(goldberg.faces) - 12),
-			10,
-			160,
-			20,
-			rl.WHITE,
-		)
+    delete(stress_values)
+    cleanup(&goldberg)
+    cleanup(&subdivided)
+    cleanup(&icosahedron)
+    
+    for plate in plates {
+        delete(plate.faces)
+        delete(plate.edges)
+        delete(plate.vertices)
+    }
+    delete(plates)
 
-		rl.EndDrawing()
-	}
-
-	cleanup(&goldberg)
-	cleanup(&subdivided)
-	cleanup(&icosahedron)
-
-	rl.CloseWindow()
+    rl.CloseWindow()
 }
 
 cleanup :: proc(planet: ^Planet) {
