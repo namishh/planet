@@ -5,25 +5,6 @@ import math "core:math"
 import "core:slice"
 import rl "vendor:raylib"
 
-distance :: proc(a, b: rl.Vector3) -> f32 {
-	dx := a.x - b.x
-	dy := a.y - b.y
-	dz := a.z - b.z
-	return math.sqrt(dx * dx + dy * dy + dz * dz)
-}
-
-normalize :: proc(v: rl.Vector3) -> rl.Vector3 {
-	length := math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z)
-	if length == 0 {
-		return v
-	}
-	return rl.Vector3{v.x / length, v.y / length, v.z / length}
-}
-
-cross :: proc(a, b: rl.Vector3) -> rl.Vector3 {
-	return rl.Vector3{a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x}
-}
-
 Vertex :: struct {
 	position: rl.Vector3,
 	normal:   rl.Vector3,
@@ -44,10 +25,17 @@ Edge :: struct {
 	face1, face2: int,
 }
 
+ClimateData :: struct {
+	temperature: f32,
+	precipitation: f32,
+	polar_factor: f32,
+}
+
 Planet :: struct {
 	faces:    [dynamic]Face,
 	vertices: [dynamic]Vertex,
 	edges:    [dynamic]Edge,
+	climate:  [dynamic]ClimateData,
 	radius:   f32,
 }
 
@@ -1208,6 +1196,141 @@ apply_height_displacement :: proc(planet: ^Planet, height_map: HeightMap) {
     recalculate_vertex_normals(planet)
 }
 
+calculate_climate :: proc(planet: ^Planet, height_map: HeightMap) {
+    if planet.climate != nil {
+        delete(planet.climate)
+    }
+    planet.climate = make([dynamic]ClimateData, len(planet.faces))
+	
+    high_altitude_threshold := lerp(height_map.min_height, height_map.max_height, 0.85)
+    
+    is_coastal := make([]bool, len(planet.faces))
+    defer delete(is_coastal)
+
+   water_threshold_normalized := lerp(height_map.min_height, height_map.max_height, WATER_THRESHOLD)
+    
+    for face_idx := 0; face_idx < len(planet.faces); face_idx += 1 {
+        face_height := height_map.values[face_idx]
+        if face_height > water_threshold_normalized {
+            neighbors := get_neighbor_faces(planet, face_idx)
+            for neighbor_idx in neighbors {
+                if height_map.values[neighbor_idx] <= water_threshold_normalized {
+                    is_coastal[face_idx] = true
+                    break
+                }
+            }
+            delete(neighbors)
+        }
+    }
+    
+    near_mountain := make([]bool, len(planet.faces))
+    defer delete(near_mountain)
+    
+    for face_idx := 0; face_idx < len(planet.faces); face_idx += 1 {
+        if height_map.values[face_idx] > high_altitude_threshold {
+            neighbors := get_neighbor_faces(planet, face_idx)
+            for neighbor_idx in neighbors {
+                near_mountain[neighbor_idx] = true
+            }
+            delete(neighbors)
+        }
+    }
+    
+    rotation_axis := rotation_axis_from_angle(TILT)
+    
+    for face_idx := 0; face_idx < len(planet.faces); face_idx += 1 {
+        face := planet.faces[face_idx]
+        
+        center_normalized := normalize(face.center)
+        
+        latitude_dot := center_normalized.x * rotation_axis.x + 
+                        center_normalized.y * rotation_axis.y + 
+                        center_normalized.z * rotation_axis.z
+                        
+        equatorial_factor := 1.0 - math.abs(latitude_dot)
+        
+        abs_latitude := math.abs(latitude_dot)
+        
+        temp := lerp(POLE_TEMP, EQUATOR_TEMP, equatorial_factor)
+        
+        normalized_height := (height_map.values[face_idx] - height_map.min_height) / 
+                           (height_map.max_height - height_map.min_height)
+        
+        if normalized_height > WATER_THRESHOLD {
+            altitude_factor := (normalized_height - WATER_THRESHOLD) / (1.0 - WATER_THRESHOLD)
+            temp = temp - f32(altitude_factor * ALTITUDE_TEMP_FACTOR)
+        }
+        
+        temp = math.clamp(temp, 0.0, 1.0)
+        
+        precip: f32
+        
+        scaled_latitude := abs_latitude * LATITUDE_SCALE
+        
+        if scaled_latitude < 0.12 {
+            precip = lerp(0.8, 1.0, 1.0 - scaled_latitude/0.12)
+        } else if scaled_latitude < 0.3 {
+            t := (scaled_latitude - 0.12) / (0.3 - 0.12)
+            precip = lerp(0.8, 0.2, t)
+        } else if scaled_latitude < 0.6 {
+            t := (scaled_latitude - 0.3) / (0.6 - 0.3)
+            precip = lerp(0.2, 0.7, t)
+        } else {
+            t := (scaled_latitude - 0.6) / (1.0 - 0.6)
+            precip = lerp(0.7, 0.1, t)
+        }
+        
+        if is_coastal[face_idx] {
+            precip += COASTAL_PRECIP_BONUS
+        }
+        
+        if near_mountain[face_idx] {
+            precip += MOUNTAIN_PRECIP_BONUS
+        }
+        
+        if normalized_height <= WATER_THRESHOLD {
+            precip = 0.0
+        }
+        
+        precip = math.clamp(precip, 0.0, 1.0)
+        
+        planet.climate[face_idx] = ClimateData{temperature = f32(temp), precipitation = precip, polar_factor = math.abs(latitude_dot)}
+    }
+
+		smooth_climate_data(planet)
+}
+
+smooth_climate_data :: proc(planet: ^Planet) {
+    temp_smoothed := make([]f32, len(planet.climate))
+    precip_smoothed := make([]f32, len(planet.climate))
+    defer delete(temp_smoothed)
+    defer delete(precip_smoothed)
+    
+    for face_idx := 0; face_idx < len(planet.faces); face_idx += 1 {
+        neighbors := get_neighbor_faces(planet, face_idx)
+        
+        temp_sum := planet.climate[face_idx].temperature
+        precip_sum := planet.climate[face_idx].precipitation
+        count := 1
+        
+        for neighbor_idx in neighbors {
+            temp_sum += planet.climate[neighbor_idx].temperature
+            precip_sum += planet.climate[neighbor_idx].precipitation
+            count += 1
+        }
+        
+        temp_smoothed[face_idx] = temp_sum / f32(count)
+        precip_smoothed[face_idx] = precip_sum / f32(count)
+        
+        delete(neighbors)
+    }
+    
+    for i := 0; i < len(planet.climate); i += 1 {
+        planet.climate[i].temperature = temp_smoothed[i]
+        planet.climate[i].precipitation = precip_smoothed[i]
+    }
+}
+
 recalculate_vertex_normals :: proc(planet: ^Planet) {
     for i := 0; i < len(planet.vertices); i += 1 {
         planet.vertices[i].normal = rl.Vector3{0, 0, 0}
@@ -1331,19 +1454,9 @@ main :: proc() {
 	defer delete(height_map.values)
 
 	apply_height_displacement(&goldberg, height_map)
-	for face_idx in 0 ..< len(goldberg.faces) {
-		face := &goldberg.faces[face_idx]
-		plate_type := plates[face.region_id].plate_type
-		is_oceanic := plate_type == .OCEANIC
+	calculate_climate(&goldberg, height_map)
 
-		face.color = height_to_color(
-			height_map.values[face_idx],
-			height_map.min_height,
-			height_map.max_height,
-			is_oceanic,
-		)
-	}
-
+	apply_biomes(&goldberg, height_map)
 
 	for !rl.WindowShouldClose() {
 		rl.UpdateCamera(&camera, .ORBITAL)
@@ -1388,26 +1501,18 @@ main :: proc() {
 			}
 		}
 
-		draw_rotation_axis(rotation_axis, PLANET_RADIUS)
+		if DRAW_ROTATION_LINE {
+			draw_rotation_axis(rotation_axis, PLANET_RADIUS)
+		}
 
 		rl.EndMode3D()
 
-		rl.DrawFPS(10, 10)
-		rl.DrawText(fmt.ctprintf("Vertices: %d", len(goldberg.vertices)), 10, 40, 20, rl.WHITE)
-		rl.DrawText(fmt.ctprintf("Edges: %d", len(goldberg.edges)), 10, 70, 20, rl.WHITE)
-		rl.DrawText(fmt.ctprintf("Faces: %d", len(goldberg.faces)), 10, 100, 20, rl.WHITE)
-		rl.DrawText(fmt.ctprintf("Hexagons: %d", len(goldberg.faces) - 12), 10, 160, 20, rl.WHITE)
-		rl.DrawText(
-			fmt.ctprintf(
-				"Height Range: %.2f to %.2f",
-				height_map.min_height,
-				height_map.max_height,
-			),
-			10,
-			190,
-			20,
-			rl.WHITE,
-		)
+		if DEBUG_MODE {
+			rl.DrawFPS(10, 10)
+			rl.DrawText(fmt.ctprintf("Vertices: %d", len(goldberg.vertices)), 10, 40, 20, rl.WHITE)
+			rl.DrawText(fmt.ctprintf("Edges: %d", len(goldberg.edges)), 10, 70, 20, rl.WHITE)
+			rl.DrawText(fmt.ctprintf("Faces: %d", len(goldberg.faces)), 10, 100, 20, rl.WHITE)
+		}
 
 		rl.EndDrawing()
 	}
@@ -1434,4 +1539,7 @@ cleanup :: proc(planet: ^Planet) {
 	delete(planet.faces)
 	delete(planet.vertices)
 	delete(planet.edges)
+	if planet.climate != nil {
+			delete(planet.climate)
+	}
 }
