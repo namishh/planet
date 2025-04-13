@@ -33,6 +33,13 @@ rand_float32_range :: proc(min, max: f32) -> f32 {
 	return min + (max - min) * rand_float32()
 }
 
+rand_int_range :: proc(min, max: int) -> int {
+	if min >= max {
+		return min
+	}
+	return min + int(rand_u32() % u32(max - min))
+}
+
 rand_int_max :: proc(max: int) -> int {
 	if max <= 0 {
 		return 0

@@ -95,15 +95,35 @@ generate_icosahedron :: proc(radius: f32) -> Planet {
 
 	for v in vertices {
 		normalized := normalize(v)
+
+		ref_vec := rl.Vector3{1, 0, 0}
+		if math.abs(normalized.x) > 0.9 {
+			ref_vec = rl.Vector3{0, 1, 0}
+		}
+
+		tangent1 := normalize(cross(normalized, ref_vec))
+		tangent2 := normalize(cross(normalized, tangent1))
+
+		disp1 := (rand_float32() - 0.5) * VERTICE_DISPLACEMENT
+		disp2 := (rand_float32() - 0.5) * VERTICE_DISPLACEMENT
+
+		displaced := rl.Vector3 {
+			normalized.x + tangent1.x * disp1 + tangent2.x * disp2,
+			normalized.y + tangent1.y * disp1 + tangent2.y * disp2,
+			normalized.z + tangent1.z * disp1 + tangent2.z * disp2,
+		}
+
+		displaced = normalize(displaced)
+
 		append(
 			&planet.vertices,
 			Vertex {
 				position = rl.Vector3 {
-					normalized.x * radius,
-					normalized.y * radius,
-					normalized.z * radius,
+					displaced.x * radius,
+					displaced.y * radius,
+					displaced.z * radius,
 				},
-				normal = normalized,
+				normal = displaced,
 			},
 		)
 	}
@@ -206,10 +226,30 @@ generate_icosahedron :: proc(radius: f32) -> Planet {
 }
 
 get_midpoint :: proc(p1, p2: rl.Vector3, radius: f32) -> rl.Vector3 {
-	midpoint := rl.Vector3{(p1.x + p2.x) * 0.5, (p1.y + p2.y) * 0.5, (p1.z + p2.z) * 0.5}
+    midpoint := rl.Vector3{(p1.x + p2.x) * 0.5, (p1.y + p2.y) * 0.5, (p1.z + p2.z) * 0.5}
 
-	normalized := normalize(midpoint)
-	return rl.Vector3{normalized.x * radius, normalized.y * radius, normalized.z * radius}
+    normalized := normalize(midpoint)
+    
+    ref_vec := rl.Vector3{1, 0, 0}
+    if math.abs(normalized.x) > 0.9 {
+        ref_vec = rl.Vector3{0, 1, 0}
+    }
+    
+    tangent1 := normalize(cross(normalized, ref_vec))
+    tangent2 := normalize(cross(normalized, tangent1))
+    
+    disp1 := (rand_float32() - 0.5) * VERTICE_DISPLACEMENT 
+    disp2 := (rand_float32() - 0.5) * VERTICE_DISPLACEMENT
+    
+    displaced := rl.Vector3{
+        normalized.x + tangent1.x * disp1 + tangent2.x * disp2,
+        normalized.y + tangent1.y * disp1 + tangent2.y * disp2,
+        normalized.z + tangent1.z * disp1 + tangent2.z * disp2,
+    }
+    
+    displaced = normalize(displaced)
+    
+    return rl.Vector3{displaced.x * radius, displaced.y * radius, displaced.z * radius}
 }
 
 generate_edges :: proc(planet: ^Planet) {
@@ -504,48 +544,294 @@ select_random_plate_centers :: proc(planet: ^Planet, num_plates: int) -> []int {
 	return plate_centers
 }
 
-assign_faces_to_plates :: proc(planet: ^Planet, plate_center_indices: []int) {
-	plate_colors := make([]rl.Color, len(plate_center_indices))
-	for i := 0; i < len(plate_center_indices); i += 1 {
+
+GrowthFrontier :: struct {
+	faces:  [dynamic]int,
+	scores: [dynamic]f32,
+}
+
+generate_growth_based_plates :: proc(planet: ^Planet, num_plates: int) -> []TectonicPlate {
+	plate_centers := select_random_plate_centers(planet, num_plates)
+	defer delete(plate_centers)
+
+	plates := make([]TectonicPlate, num_plates)
+	for i in 0 ..< num_plates {
+		plates[i].faces = make([dynamic]int)
+		plates[i].edges = make([dynamic]int)
+		plates[i].vertices = make([dynamic]int)
+		plates[i].plate_type =
+			rand_float32() < CONTINENTAL_TO_OCEANIC_RATIO ? .CONTINENTAL : .OCEANIC
+
+		plates[i].rotation_axis = rotation_axis_from_angle(TILT)
+		plates[i].angular_velocity = rand_float32_range(0, 0.01)
+	}
+
+	assigned := make([]bool, len(planet.faces))
+	defer delete(assigned)
+
+	frontiers := make([]GrowthFrontier, num_plates)
+	defer {
+		for frontier in frontiers {
+			delete(frontier.faces)
+			delete(frontier.scores)
+		}
+		delete(frontiers)
+	}
+
+	growth_directions := make([][3]rl.Vector3, num_plates)
+	defer delete(growth_directions)
+
+	plate_colors := make([]rl.Color, num_plates)
+	defer delete(plate_colors)
+
+	for i := 0; i < num_plates; i += 1 {
+		num_dirs := rand_int_range(1, 4)
+		for d := 0; d < num_dirs; d += 1 {
+			theta := rand_float32() * 2 * rl.PI
+			phi := rand_float32() * rl.PI
+
+			x := math.sin(phi) * math.cos(theta)
+			y := math.sin(phi) * math.sin(theta)
+			z := math.cos(phi)
+
+			growth_directions[i][d] = normalize(rl.Vector3{f32(x), f32(y), f32(z)})
+		}
+
 		plate_colors[i] = rl.Color {
 			u8(rand_int_max(200) + 55),
 			u8(rand_int_max(200) + 55),
 			u8(rand_int_max(200) + 55),
 			255,
 		}
+
+		center_idx := plate_centers[i]
+		append(&plates[i].faces, center_idx)
+		assigned[center_idx] = true
+
+		face := &planet.faces[center_idx]
+		face.region_id = i
+		face.color = plate_colors[i]
+
+		neighbors := get_neighbor_faces(planet, center_idx)
+		for neighbor in neighbors {
+			if !assigned[neighbor] {
+				append(&frontiers[i].faces, neighbor)
+				append(&frontiers[i].scores, rand_float32())
+			}
+		}
+		delete(neighbors)
 	}
 
-	for face_idx := 0; face_idx < len(planet.faces); face_idx += 1 {
-		face := &planet.faces[face_idx]
-		face_center := face.center
+	plate_strengths := make([]f32, num_plates)
+	for i := 0; i < num_plates; i += 1 {
+		plate_strengths[i] = rand_float32_range(0.5, 1.0)
+	}
+	defer delete(plate_strengths)
 
-		closest_plate := 0
-		min_distance := f32(999999.0)
+	remaining_faces := len(planet.faces) - num_plates
+	iterations := 0
+	max_iterations := len(planet.faces) * 1000
 
-		for plate_idx := 0; plate_idx < len(plate_center_indices); plate_idx += 1 {
-			center_face_idx := plate_center_indices[plate_idx]
-			center_pos := planet.faces[center_face_idx].center
+	for remaining_faces > 0 && iterations < max_iterations {
+		iterations += 1
 
-			dist := distance(face_center, center_pos)
+		for plate_idx := 0; plate_idx < num_plates; plate_idx += 1 {
+			if len(frontiers[plate_idx].faces) == 0 ||
+			   rand_float32() > plate_strengths[plate_idx] {
+				continue
+			}
 
-			if dist < min_distance {
-				min_distance = dist
-				closest_plate = plate_idx
+			center_pos := rl.Vector3{0, 0, 0}
+			if len(plates[plate_idx].faces) > 0 {
+				for face_idx in plates[plate_idx].faces {
+					face_pos := planet.faces[face_idx].center
+					center_pos.x += face_pos.x
+					center_pos.y += face_pos.y
+					center_pos.z += face_pos.z
+				}
+				center_pos.x /= f32(len(plates[plate_idx].faces))
+				center_pos.y /= f32(len(plates[plate_idx].faces))
+				center_pos.z /= f32(len(plates[plate_idx].faces))
+				center_pos = normalize(center_pos)
+			}
+
+			for i := 0; i < len(frontiers[plate_idx].faces); i += 1 {
+				face_idx := frontiers[plate_idx].faces[i]
+				face_pos := planet.faces[face_idx].center
+
+				frontiers[plate_idx].scores[i] =
+					frontiers[plate_idx].scores[i] * 0.5 + rand_float32() * 0.5
+
+				direction := normalize(
+					rl.Vector3 {
+						face_pos.x - center_pos.x,
+						face_pos.y - center_pos.y,
+						face_pos.z - center_pos.z,
+					},
+				)
+
+				max_alignment := f32(0)
+				for d := 0; d < 3; d += 1 {
+					growth_dir := growth_directions[plate_idx][d]
+					if growth_dir.x == 0 && growth_dir.y == 0 && growth_dir.z == 0 {
+						continue
+					}
+
+					alignment :=
+						direction.x * growth_dir.x +
+						direction.y * growth_dir.y +
+						direction.z * growth_dir.z
+
+					if alignment > max_alignment {
+						max_alignment = alignment
+					}
+				}
+
+				alignment_factor := 1.0 + max_alignment
+				frontiers[plate_idx].scores[i] *= alignment_factor
+			}
+
+			if len(frontiers[plate_idx].faces) > 0 {
+				best_idx := 0
+				best_score := frontiers[plate_idx].scores[0]
+				for i := 1; i < len(frontiers[plate_idx].scores); i += 1 {
+					if frontiers[plate_idx].scores[i] > best_score {
+						best_score = frontiers[plate_idx].scores[i]
+						best_idx = i
+					}
+				}
+
+				face_idx := frontiers[plate_idx].faces[best_idx]
+
+				ordered_remove(&frontiers[plate_idx].faces, best_idx)
+				ordered_remove(&frontiers[plate_idx].scores, best_idx)
+
+				if assigned[face_idx] {
+					continue
+				}
+
+				append(&plates[plate_idx].faces, face_idx)
+				assigned[face_idx] = true
+				remaining_faces -= 1
+
+				face := &planet.faces[face_idx]
+				face.region_id = plate_idx
+				face.color = plate_colors[plate_idx]
+
+				neighbors := get_neighbor_faces(planet, face_idx)
+				for neighbor in neighbors {
+					if !assigned[neighbor] &&
+					   !slice.contains(frontiers[plate_idx].faces[:], neighbor) {
+						append(&frontiers[plate_idx].faces, neighbor)
+						append(&frontiers[plate_idx].scores, rand_float32())
+					}
+				}
+				delete(neighbors)
 			}
 		}
 
-		face.region_id = closest_plate
-		face.color = plate_colors[closest_plate]
+		if iterations % 1000 == 0 && remaining_faces > 0 {
+			fmt.println("Forcing assignment of some faces. Remaining:", remaining_faces)
+
+			unassigned := make([dynamic]int)
+			defer delete(unassigned)
+
+			for face_idx := 0; face_idx < len(planet.faces); face_idx += 1 {
+				if !assigned[face_idx] {
+					append(&unassigned, face_idx)
+				}
+			}
+
+			force_count := max(1, len(unassigned) / 10)
+			for i := 0; i < force_count && len(unassigned) > 0; i += 1 {
+				random_idx := rand_int_max(len(unassigned))
+				face_idx := unassigned[random_idx]
+				ordered_remove(&unassigned, random_idx)
+
+				plate_idx := rand_int_max(num_plates)
+				append(&plates[plate_idx].faces, face_idx)
+				assigned[face_idx] = true
+				remaining_faces -= 1
+
+				face := &planet.faces[face_idx]
+				face.region_id = plate_idx
+				face.color = plate_colors[plate_idx]
+
+				neighbors := get_neighbor_faces(planet, face_idx)
+				for neighbor in neighbors {
+					if !assigned[neighbor] &&
+					   !slice.contains(frontiers[plate_idx].faces[:], neighbor) {
+						append(&frontiers[plate_idx].faces, neighbor)
+						append(&frontiers[plate_idx].scores, rand_float32())
+					}
+				}
+				delete(neighbors)
+			}
+		}
 	}
 
-	delete(plate_colors)
+	for plate_idx in 0 ..< num_plates {
+		plate := &plates[plate_idx]
+
+		face_in_plate := make([]bool, len(planet.faces))
+		defer delete(face_in_plate)
+
+		for face_idx in plate.faces {
+			face_in_plate[face_idx] = true
+		}
+
+		for edge_idx in 0 ..< len(planet.edges) {
+			edge := planet.edges[edge_idx]
+			if (edge.face1 != -1 && edge.face2 != -1) &&
+			   face_in_plate[edge.face1] &&
+			   face_in_plate[edge.face2] {
+				append(&plate.edges, edge_idx)
+			}
+		}
+
+		vertex_set := make(map[int]bool)
+		defer delete(vertex_set)
+
+		for face_idx in plate.faces {
+			face := planet.faces[face_idx]
+			for v_idx in face.vertices {
+				vertex_set[v_idx] = true
+			}
+		}
+
+		for v_idx in vertex_set {
+			append(&plate.vertices, v_idx)
+		}
+	}
+
+	fmt.println("Applied growth-based tectonic plates:", num_plates)
+	fmt.println("Iterations:", iterations)
+	fmt.println("Unassigned faces:", remaining_faces)
+
+	return plates
 }
 
 apply_tectonic_plates :: proc(planet: ^Planet, num_plates: int) {
-	plate_centers := select_random_plate_centers(planet, num_plates)
-	defer delete(plate_centers)
+	plates := generate_growth_based_plates(planet, num_plates)
 
-	assign_faces_to_plates(planet, plate_centers)
+	for plate_idx in 0 ..< num_plates {
+		plate := plates[plate_idx]
+		axis := plate.rotation_axis
+		omega := plate.angular_velocity
+
+		for face_idx in plate.faces {
+			face := &planet.faces[face_idx]
+			p := face.center
+			face.velocity = omega * cross(axis, p)
+		}
+	}
+
+	for plate in plates {
+		delete(plate.faces)
+		delete(plate.edges)
+		delete(plate.vertices)
+	}
+	delete(plates)
 
 	fmt.println("Applied tectonic plates:", num_plates)
 }
@@ -613,33 +899,29 @@ generate_height_map :: proc(
 		}
 	}
 
-  for face_idx := 0; face_idx < len(planet.faces); face_idx += 1 {
-        face := &planet.faces[face_idx]
-        plate_idx := face.region_id
-        plate_type := plates[plate_idx].plate_type
-        
-        // Base height determined by plate type
-        base_height := plate_type == .CONTINENTAL ? 0.5 : -0.5
-        
-        // Stress factor (from original code)
-        stress_factor := max_stress > 0 ? stress_values[face_idx] / max_stress : 0
-        stress_height := math.pow(stress_factor, 1.5) * 1.5
-        
-        // Sum up all noise layers
-        noise_sum := f32(0)
-        
-        // Apply each noise layer if there are any
-        if len(noise_layers) > 0 {
-            for layer in noise_layers {
-                layer_noise := generate_noise_layer(layer, face.center)
-                
-                multiplier := plate_type == .CONTINENTAL ? 1.0 : 0.5
-                noise_sum += layer_noise * f32(multiplier)
-            }
-        }
-        
-        heights[face_idx] = f32(base_height) + stress_height + noise_sum
-    }
+	for face_idx := 0; face_idx < len(planet.faces); face_idx += 1 {
+		face := &planet.faces[face_idx]
+		plate_idx := face.region_id
+		plate_type := plates[plate_idx].plate_type
+
+		base_height := plate_type == .CONTINENTAL ? 0.5 : -0.5
+
+		stress_factor := max_stress > 0 ? stress_values[face_idx] / max_stress : 0
+		stress_height := math.pow(stress_factor, 1.5) * 1.5
+
+		noise_sum := f32(0)
+
+		if len(noise_layers) > 0 {
+			for layer in noise_layers {
+				layer_noise := generate_noise_layer(layer, face.center)
+
+				multiplier := plate_type == .CONTINENTAL ? 1.0 : 0.5
+				noise_sum += layer_noise * f32(multiplier)
+			}
+		}
+
+		heights[face_idx] = f32(base_height) + stress_height + noise_sum
+	}
 
 	smoothed_heights := make([]f32, len(heights))
 	for face_idx := 0; face_idx < len(planet.faces); face_idx += 1 {
@@ -673,104 +955,152 @@ generate_height_map :: proc(
 	return HeightMap{values = smoothed_heights, min_height = min_height, max_height = max_height}
 }
 
+
+noise_for_color :: proc(value: u8, range: u8) -> u8 {
+	noise := rand_int_max(int(range * 2 + 1)) - int(range)
+	result := int(value) + noise
+	return u8(math.clamp(result, 0, 255))
+}
+
 height_to_color :: proc(height: f32, min_height, max_height: f32, is_oceanic: bool) -> rl.Color {
-    t := (height - min_height) / (max_height - min_height)
-    t = math.clamp(t, 0, 1)
-    
-    // Add noise to color to create more variation
-    noise_for_color :: proc(value: u8, range: u8) -> u8 {
-        noise := rand_int_max(int(range * 2 + 1)) - int(range)
-        result := int(value) + noise
-        return u8(math.clamp(result, 0, 255))
-    }
-    
-    if t < WATER_THRESHOLD {
-        // Water - slight variation in blues
-        depth_factor := t / WATER_THRESHOLD  // 0 = deepest, 1 = shallow
-        
-        r := u8(math.lerp(f32(10), f32(22), depth_factor))
-        g := u8(math.lerp(f32(20), f32(44), depth_factor))
-        b := u8(math.lerp(f32(80), f32(99), depth_factor))
-        
-        return rl.Color{noise_for_color(r, 5), noise_for_color(g, 5), noise_for_color(b, 10), 255}
-    } else if t < 0.6 {
-        // Green zones - more varied greens
-        green_t := (t - WATER_THRESHOLD) / (0.6 - WATER_THRESHOLD)
-        
-        // Add a slight randomness to the green_t value for more variation
-        green_t += (rand_float32() - 0.5) * 0.1
-        green_t = math.clamp(green_t, 0, 1)
-        
-        if green_t < 0.2 {
-            r := u8(80 + green_t * 40)
-            g := u8(130 + green_t * 20)
-            b := u8(30 + green_t * 20)
-            return rl.Color{noise_for_color(r, 15), noise_for_color(g, 15), noise_for_color(b, 10), 255}
-        } else if green_t < 0.4 {
-            r := u8(30 + green_t * 40)
-            g := u8(100 + green_t * 30)
-            b := u8(30 + green_t * 20)
-            return rl.Color{noise_for_color(r, 15), noise_for_color(g, 20), noise_for_color(b, 10), 255}
-        } else if green_t < 0.6 {
-            r := u8(60 + green_t * 50)
-            g := u8(140 + green_t * 30)
-            b := u8(30 + green_t * 30)
-            return rl.Color{noise_for_color(r, 15), noise_for_color(g, 25), noise_for_color(b, 10), 255}
-        } else if green_t < 0.8 {
-            r := u8(120 + green_t * 60)
-            g := u8(140 + green_t * 40)
-            b := u8(40 + green_t * 20)
-            return rl.Color{noise_for_color(r, 20), noise_for_color(g, 20), noise_for_color(b, 10), 255}
-        } else {
-            r := u8(150 + green_t * 50)
-            g := u8(160 + green_t * 20)
-            b := u8(50 + green_t * 30)
-            return rl.Color{noise_for_color(r, 20), noise_for_color(g, 15), noise_for_color(b, 10), 255}
-        }
-    } else if t < MOUNTAIN_THRESHOLD {
-        orange_t := (t - 0.6) / (MOUNTAIN_THRESHOLD - 0.6)
-        
-        if orange_t < 0.33 {
-            r := u8(180 - orange_t * 20)
-            g := u8(140 - orange_t * 40)
-            b := u8(65 - orange_t * 15)
-            return rl.Color{noise_for_color(r, 20), noise_for_color(g, 15), noise_for_color(b, 10), 255}
-        } else if orange_t < 0.66 {
-            r := u8(160 - orange_t * 20)
-            g := u8(120 - orange_t * 30)
-            b := u8(55 - orange_t * 15)
-            return rl.Color{noise_for_color(r, 15), noise_for_color(g, 15), noise_for_color(b, 10), 255}
-        } else {
-            r := u8(140 - orange_t * 20)
-            g := u8(100 - orange_t * 30)
-            b := u8(45 - orange_t * 15)
-            return rl.Color{noise_for_color(r, 15), noise_for_color(g, 10), noise_for_color(b, 10), 255}
-        }
-    } else {
-        mountain_t := (t - MOUNTAIN_THRESHOLD) / (1.0 - MOUNTAIN_THRESHOLD)
-        
-        if mountain_t > 0.7 {
-            snow := u8(230 + mountain_t * 25)
-            return rl.Color{
-                noise_for_color(snow, 10), 
-                noise_for_color(snow, 10), 
-                noise_for_color(snow, 10), 
-                255
-            }
-        } else {
-            if mountain_t < 0.35 {
-                r := u8(130 - mountain_t * 20)
-                g := u8(90 - mountain_t * 20)
-                b := u8(80 - mountain_t * 10)
-                return rl.Color{noise_for_color(r, 15), noise_for_color(g, 15), noise_for_color(b, 15), 255}
-            } else {
-                r := u8(120 - mountain_t * 20)
-                g := u8(120 - mountain_t * 20)
-                b := u8(120 - mountain_t * 20)
-                return rl.Color{noise_for_color(r, 15), noise_for_color(g, 15), noise_for_color(b, 15), 255}
-            }
-        }
-    }
+	t := (height - min_height) / (max_height - min_height)
+	t = math.clamp(t, 0, 1)
+
+
+	if t < WATER_THRESHOLD {
+		depth_factor := t / WATER_THRESHOLD
+
+		r := u8(math.lerp(f32(10), f32(22), depth_factor))
+		g := u8(math.lerp(f32(20), f32(44), depth_factor))
+		b := u8(math.lerp(f32(80), f32(99), depth_factor))
+
+		return rl.Color{noise_for_color(r, 5), noise_for_color(g, 5), noise_for_color(b, 10), 255}
+	} else if t < 0.6 {
+		green_t := (t - WATER_THRESHOLD) / (0.6 - WATER_THRESHOLD)
+
+		green_t += (rand_float32() - 0.5) * 0.1
+		green_t = math.clamp(green_t, 0, 1)
+
+		if green_t < 0.2 {
+			r := u8(80 + green_t * 40)
+			g := u8(130 + green_t * 20)
+			b := u8(30 + green_t * 20)
+			return rl.Color {
+				noise_for_color(r, 15),
+				noise_for_color(g, 15),
+				noise_for_color(b, 10),
+				255,
+			}
+		} else if green_t < 0.4 {
+			r := u8(30 + green_t * 40)
+			g := u8(100 + green_t * 30)
+			b := u8(30 + green_t * 20)
+			return rl.Color {
+				noise_for_color(r, 15),
+				noise_for_color(g, 20),
+				noise_for_color(b, 10),
+				255,
+			}
+		} else if green_t < 0.6 {
+			r := u8(60 + green_t * 50)
+			g := u8(140 + green_t * 30)
+			b := u8(30 + green_t * 30)
+			return rl.Color {
+				noise_for_color(r, 15),
+				noise_for_color(g, 25),
+				noise_for_color(b, 10),
+				255,
+			}
+		} else if green_t < 0.8 {
+			r := u8(120 + green_t * 60)
+			g := u8(140 + green_t * 40)
+			b := u8(40 + green_t * 20)
+			return rl.Color {
+				noise_for_color(r, 20),
+				noise_for_color(g, 20),
+				noise_for_color(b, 10),
+				255,
+			}
+		} else {
+			r := u8(150 + green_t * 50)
+			g := u8(160 + green_t * 20)
+			b := u8(50 + green_t * 30)
+			return rl.Color {
+				noise_for_color(r, 20),
+				noise_for_color(g, 15),
+				noise_for_color(b, 10),
+				255,
+			}
+		}
+	} else if t < MOUNTAIN_THRESHOLD {
+		orange_t := (t - 0.6) / (MOUNTAIN_THRESHOLD - 0.6)
+
+		if orange_t < 0.33 {
+			r := u8(180 - orange_t * 20)
+			g := u8(140 - orange_t * 40)
+			b := u8(65 - orange_t * 15)
+			return rl.Color {
+				noise_for_color(r, 20),
+				noise_for_color(g, 15),
+				noise_for_color(b, 10),
+				255,
+			}
+		} else if orange_t < 0.66 {
+			r := u8(160 - orange_t * 20)
+			g := u8(120 - orange_t * 30)
+			b := u8(55 - orange_t * 15)
+			return rl.Color {
+				noise_for_color(r, 15),
+				noise_for_color(g, 15),
+				noise_for_color(b, 10),
+				255,
+			}
+		} else {
+			r := u8(140 - orange_t * 20)
+			g := u8(100 - orange_t * 30)
+			b := u8(45 - orange_t * 15)
+			return rl.Color {
+				noise_for_color(r, 15),
+				noise_for_color(g, 10),
+				noise_for_color(b, 10),
+				255,
+			}
+		}
+	} else {
+		mountain_t := (t - MOUNTAIN_THRESHOLD) / (1.0 - MOUNTAIN_THRESHOLD)
+
+		if mountain_t > 0.7 {
+			snow := u8(230 + mountain_t * 25)
+			return rl.Color {
+				noise_for_color(snow, 10),
+				noise_for_color(snow, 10),
+				noise_for_color(snow, 10),
+				255,
+			}
+		} else {
+			if mountain_t < 0.35 {
+				r := u8(130 - mountain_t * 20)
+				g := u8(90 - mountain_t * 20)
+				b := u8(80 - mountain_t * 10)
+				return rl.Color {
+					noise_for_color(r, 15),
+					noise_for_color(g, 15),
+					noise_for_color(b, 15),
+					255,
+				}
+			} else {
+				r := u8(120 - mountain_t * 20)
+				g := u8(120 - mountain_t * 20)
+				b := u8(120 - mountain_t * 20)
+				return rl.Color {
+					noise_for_color(r, 15),
+					noise_for_color(g, 15),
+					noise_for_color(b, 15),
+					255,
+				}
+			}
+		}
+	}
 }
 
 draw_rotation_axis :: proc(axis: rl.Vector3, planet_radius: f32) {
@@ -799,6 +1129,105 @@ rotation_axis_from_angle :: proc(degrees: f64) -> rl.Vector3 {
 	z := 0.0
 
 	return normalize(rl.Vector3{f32(x), f32(y), f32(z)})
+}
+
+apply_height_displacement :: proc(planet: ^Planet, height_map: HeightMap) {
+    vertex_heights := make([]f32, len(planet.vertices))
+    vertex_counts := make([]int, len(planet.vertices))
+    defer delete(vertex_heights)
+    defer delete(vertex_counts)
+    
+    for face_idx := 0; face_idx < len(planet.faces); face_idx += 1 {
+        face := &planet.faces[face_idx]
+        height := height_map.values[face_idx]
+        
+        for vertex_idx in face.vertices {
+            vertex_heights[vertex_idx] += height
+            vertex_counts[vertex_idx] += 1
+        }
+    }
+    
+    for vertex_idx := 0; vertex_idx < len(planet.vertices); vertex_idx += 1 {
+        if vertex_counts[vertex_idx] > 0 {
+            vertex_heights[vertex_idx] /= f32(vertex_counts[vertex_idx])
+        }
+    }
+    
+    height_scale := planet.radius * HEIGHT_DISPLACEMENT
+    
+		normalized_water_level := math.lerp(height_map.min_height, height_map.max_height, f32(WATER_THRESHOLD))
+    water_displacement := normalized_water_level * height_scale
+    
+    for vertex_idx := 0; vertex_idx < len(planet.vertices); vertex_idx += 1 {
+        if vertex_counts[vertex_idx] > 0 {
+            avg_height := vertex_heights[vertex_idx]
+            
+            displacement: f32
+            
+            normalized_height := (avg_height - height_map.min_height) / (height_map.max_height - height_map.min_height)
+            if normalized_height < WATER_THRESHOLD {
+                displacement = water_displacement
+            } else {
+                displacement = avg_height * height_scale
+            }
+            
+            vertex := &planet.vertices[vertex_idx]
+            base_position := normalize(vertex.position) * planet.radius
+            
+            vertex.position = base_position + vertex.normal * displacement
+        }
+    }
+    
+    for face_idx := 0; face_idx < len(planet.faces); face_idx += 1 {
+        face := &planet.faces[face_idx]
+        
+        center := rl.Vector3{0, 0, 0}
+        for vertex_idx in face.vertices {
+            vertex_pos := planet.vertices[vertex_idx].position
+            center.x += vertex_pos.x
+            center.y += vertex_pos.y
+            center.z += vertex_pos.z
+        }
+        
+        center.x /= f32(len(face.vertices))
+        center.y /= f32(len(face.vertices))
+        center.z /= f32(len(face.vertices))
+        face.center = center
+        
+        if len(face.vertices) >= 3 {
+            v1 := planet.vertices[face.vertices[0]].position
+            v2 := planet.vertices[face.vertices[1]].position
+            v3 := planet.vertices[face.vertices[2]].position
+            
+            edge1 := rl.Vector3{v2.x - v1.x, v2.y - v1.y, v2.z - v1.z}
+            edge2 := rl.Vector3{v3.x - v1.x, v3.y - v1.y, v3.z - v1.z}
+            face.normal = normalize(cross(edge1, edge2))
+        }
+    }
+    
+    recalculate_vertex_normals(planet)
+}
+
+recalculate_vertex_normals :: proc(planet: ^Planet) {
+    for i := 0; i < len(planet.vertices); i += 1 {
+        planet.vertices[i].normal = rl.Vector3{0, 0, 0}
+    }
+    
+    for face_idx := 0; face_idx < len(planet.faces); face_idx += 1 {
+        face := planet.faces[face_idx]
+        
+        for vertex_idx in face.vertices {
+            vertex := &planet.vertices[vertex_idx]
+            vertex.normal.x += face.normal.x
+            vertex.normal.y += face.normal.y
+            vertex.normal.z += face.normal.z
+        }
+    }
+    
+    for i := 0; i < len(planet.vertices); i += 1 {
+        vertex := &planet.vertices[i]
+        vertex.normal = normalize(vertex.normal)
+    }
 }
 
 main :: proc() {
@@ -901,6 +1330,7 @@ main :: proc() {
 	height_map := generate_height_map(&goldberg, plates, stress_values, NOISE_LAYERS)
 	defer delete(height_map.values)
 
+	apply_height_displacement(&goldberg, height_map)
 	for face_idx in 0 ..< len(goldberg.faces) {
 		face := &goldberg.faces[face_idx]
 		plate_type := plates[face.region_id].plate_type
@@ -913,6 +1343,7 @@ main :: proc() {
 			is_oceanic,
 		)
 	}
+
 
 	for !rl.WindowShouldClose() {
 		rl.UpdateCamera(&camera, .ORBITAL)
@@ -950,7 +1381,7 @@ main :: proc() {
 
 				v1 := goldberg.vertices[v1_idx].position
 				v2 := goldberg.vertices[v2_idx].position
-				
+
 				if DRAW_BORDERS {
 					rl.DrawLine3D(v1, v2, edge_color)
 				}
