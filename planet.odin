@@ -539,6 +539,7 @@ GrowthFrontier :: struct {
 }
 
 generate_growth_based_plates :: proc(planet: ^Planet, num_plates: int) -> []TectonicPlate {
+	fmt.printf("Generating %d tectonic plates for %d faces...\n", num_plates, len(planet.faces))
 	plate_centers := select_random_plate_centers(planet, num_plates)
 	defer delete(plate_centers)
 
@@ -719,7 +720,7 @@ generate_growth_based_plates :: proc(planet: ^Planet, num_plates: int) -> []Tect
 		}
 
 		if iterations % 1000 == 0 && remaining_faces > 0 {
-			fmt.println("Forcing assignment of some faces. Remaining:", remaining_faces)
+			fmt.printf("Iteration %d: Forcing assignment of some faces. Remaining: %d\n", iterations, remaining_faces)
 
 			unassigned := make([dynamic]int)
 			defer delete(unassigned)
@@ -1456,7 +1457,21 @@ main :: proc() {
 	apply_height_displacement(&goldberg, height_map)
 	calculate_climate(&goldberg, height_map)
 
+	fmt.println("Applying biomes...")
 	apply_biomes(&goldberg, height_map)
+	fmt.println("Biomes applied!")
+
+	render_texture: rl.RenderTexture2D
+	dither_shader: rl.Shader
+	shader_resolution_loc: i32
+	
+	if ENABLED_SHADER {
+		render_texture = rl.LoadRenderTexture(1600, 900)
+		dither_shader = rl.LoadShader("", "dither.fs")
+		shader_resolution_loc = rl.GetShaderLocation(dither_shader, "resolution")
+		resolution := rl.Vector2{1600.0, 900.0}
+		rl.SetShaderValue(dither_shader, shader_resolution_loc, &resolution, .VEC2)
+	}
 
 	for !rl.WindowShouldClose() {
 		rl.UpdateCamera(&camera, .ORBITAL)
@@ -1468,8 +1483,15 @@ main :: proc() {
 		camera.position.x = f32(x * math.cos(rotation_speed) - z * math.sin(rotation_speed))
 		camera.position.z = f32(x * math.sin(rotation_speed) + z * math.cos(rotation_speed))
 
-		rl.BeginDrawing()
-		rl.ClearBackground(rl.BLACK)
+		if ENABLED_SHADER {
+			// Render to texture
+			rl.BeginTextureMode(render_texture)
+			rl.ClearBackground(rl.Color{50, 49, 59, 255})
+		} else {
+			// Render directly to screen
+			rl.BeginDrawing()
+			rl.ClearBackground(rl.Color{50, 49, 59, 255})
+		}
 
 		rl.BeginMode3D(camera)
 
@@ -1506,6 +1528,17 @@ main :: proc() {
 		}
 
 		rl.EndMode3D()
+		
+		if ENABLED_SHADER {
+			rl.EndTextureMode()
+			
+			rl.BeginDrawing()
+			rl.ClearBackground(rl.Color{50, 49, 59, 255})
+			
+			rl.BeginShaderMode(dither_shader)
+			rl.DrawTextureRec(render_texture.texture, rl.Rectangle{0, 0, 1600, -900}, rl.Vector2{0, 0}, rl.WHITE)
+			rl.EndShaderMode()
+		}
 
 		if DEBUG_MODE {
 			rl.DrawFPS(10, 10)
@@ -1528,6 +1561,11 @@ main :: proc() {
 		delete(plate.vertices)
 	}
 	delete(plates)
+
+	if ENABLED_SHADER {
+		rl.UnloadShader(dither_shader)
+		rl.UnloadRenderTexture(render_texture)
+	}
 
 	rl.CloseWindow()
 }

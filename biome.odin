@@ -1,5 +1,6 @@
 package planet
 
+import "core:fmt"
 import math "core:math"
 import rl "vendor:raylib"
 
@@ -27,43 +28,43 @@ BiomeData :: struct {
 
 BIOMES := []BiomeData {
 	// OCEAN
-	{0.5, 0.0, rl.Color{10, 20, 80, 255}},
+	{0.5, 0.0, BIOME_COLORS[0]},
 
 	// DESERT
-	{0.9, 0.1, rl.Color{230, 210, 180, 255}},
+	{0.9, 0.1, BIOME_COLORS[1]},
 
 	// SAVANNAH
-	{0.8, 0.3, rl.Color{200, 190, 120, 255}},
+	{0.8, 0.3, BIOME_COLORS[2]},
 
 	// TAIGA
-	{0.3, 0.4, rl.Color{90, 120, 90, 255}},
+	{0.3, 0.4, BIOME_COLORS[3]},
 
 	// RAINFOREST
-	{0.8, 0.9, rl.Color{40, 160, 70, 255}},
+	{0.8, 0.9, BIOME_COLORS[4]},
 
 	// TUNDRA
-	{0.2, 0.2, rl.Color{180, 180, 160, 255}},
+	{0.2, 0.2, BIOME_COLORS[5]},
 
 	// POLAR
-	{0.1, 0.1, rl.Color{220, 220, 240, 255}},
+	{0.1, 0.1, BIOME_COLORS[6]},
 
 	// TEMPERATE FOREST
-	{0.5, 0.7, rl.Color{70, 140, 60, 255}},
+	{0.5, 0.7, BIOME_COLORS[7]},
 
 	// MEDITERRANEAN
-	{0.7, 0.4, rl.Color{170, 190, 90, 255}},
+	{0.7, 0.4, BIOME_COLORS[8]},
 
 	// STEPPE
-	{0.6, 0.3, rl.Color{180, 180, 120, 255}},
+	{0.6, 0.3, BIOME_COLORS[9]},
 
 	// GRASSLAND
-	{0.5, 0.5, rl.Color{150, 180, 90, 255}},
+	{0.5, 0.5, BIOME_COLORS[10]},
 
 	// MOUNTAIN
-	{0.3, 0.3, rl.Color{130, 130, 130, 255}},
+	{0.3, 0.3, BIOME_COLORS[11]},
 
 	// SNOW_CAP
-	{0.1, 0.1, rl.Color{240, 240, 240, 255}},
+	{0.1, 0.1, BIOME_COLORS[12]},
 }
 
 apply_color_noise :: proc(base: u8, range: u8) -> u8 {
@@ -73,7 +74,11 @@ apply_color_noise :: proc(base: u8, range: u8) -> u8 {
 }
 
 apply_biomes :: proc(planet: ^Planet, height_map: HeightMap) {
-	for face_idx := 0; face_idx < len(planet.faces); face_idx += 1 {
+	total_faces := len(planet.faces)
+	for face_idx := 0; face_idx < total_faces; face_idx += 1 {
+		if face_idx % 1000 == 0 {
+			fmt.printf("Processing face %d/%d\n", face_idx, total_faces)
+		}
 		face := &planet.faces[face_idx]
 		climate := planet.climate[face_idx]
 		height := height_map.values[face_idx]
@@ -105,9 +110,13 @@ apply_biomes :: proc(planet: ^Planet, height_map: HeightMap) {
 			depth_factor := height / water_level
 			depth_factor = math.clamp(depth_factor, 0.0, 1.0)
 
-			r := math.lerp(f32(10), f32(22), depth_factor) // Deep to shallow
-			g := math.lerp(f32(20), f32(44), depth_factor)
-			b := math.lerp(f32(80), f32(99), depth_factor)
+			base_r := f32(base_color.r)
+			base_g := f32(base_color.g)
+			base_b := f32(base_color.b)
+			
+			r := math.lerp(base_r * 0.5, base_r, depth_factor)
+			g := math.lerp(base_g * 0.5, base_g, depth_factor)
+			b := math.lerp(base_b * 0.5, base_b, depth_factor)
 
 			polar_factor := climate.polar_factor
 
